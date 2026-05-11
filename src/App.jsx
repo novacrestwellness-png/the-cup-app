@@ -8,7 +8,7 @@ export default function App() {
   const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState(null);
-  const [viewingClientId, setViewingClientId] = useState(null);
+  const [viewingClient, setViewingClient] = useState(null); // { id, label }
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -45,11 +45,17 @@ export default function App() {
   if (!session) return <Auth />;
 
   if (profile?.role === 'clinician') {
-    if (viewingClientId) {
-      return <Tracker session={session} isClinicianView={true} viewingClientId={viewingClientId}
-                      onBack={() => setViewingClientId(null)} />;
+    if (viewingClient) {
+      return <Tracker
+        session={session}
+        isClinicianView={true}
+        viewingClientId={viewingClient.id}
+        viewingClientLabel={viewingClient.label}
+        onBack={() => setViewingClient(null)} />;
     }
-    return <ClinicianDashboard session={session} onViewClient={setViewingClientId} />;
+    return <ClinicianDashboard
+      session={session}
+      onViewClient={(id, label) => setViewingClient({ id, label })} />;
   }
 
   return <Tracker session={session} />;

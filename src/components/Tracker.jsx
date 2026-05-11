@@ -1,14 +1,17 @@
 import React, { useState, useEffect } from 'react';
-import { Droplet, Apple, Pill, Wind, Moon, Heart, Sparkles, TrendingUp, Check, ChevronLeft, ChevronRight, Flame, Star, LogOut, Eye } from 'lucide-react';
+import { Droplet, Apple, Pill, Wind, Moon, Heart, Sparkles, TrendingUp, Check, ChevronLeft, ChevronRight, Flame, Star, LogOut, Eye, MessageCircle } from 'lucide-react';
 import { supabase } from '../lib/supabase';
+import Messages from './Messages';
 
-export default function Tracker({ session, isClinicianView, viewingClientId, onBack }) {
+export default function Tracker({ session, isClinicianView, viewingClientId, viewingClientLabel, onBack, clinicianUserIdForClient }) {
   const [view, setView] = useState('today');
   const [today, setToday] = useState(getDateKey(new Date()));
   const [data, setData] = useState({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [clientEmail, setClientEmail] = useState('');
+  const [threadPartnerId, setThreadPartnerId] = useState(null);
+  const [threadPartnerLabel, setThreadPartnerLabel] = useState('');
+  const [unreadCount, setUnreadCount] = useState(0);
 
   const userId = isClinicianView ? viewingClientId : session.user.id;
 
@@ -72,8 +75,62 @@ export default function Tracker({ session, isClinicianView, viewingClientId, onB
     load();
   }, [userId]);
 
+  // Find the thread partner: for a client, it's their linked clinician;
+  // for clinician viewing client, it's that client.
+  useEffect(() => {
+    async function loadThreadPartner() {
+      if (isClinicianView) {
+        // We're a clinician viewing a client's data — thread partner is that client
+        setThreadPartnerId(viewingClientId);
+        setThreadPartnerLabel(viewingClientLabel || 'Client');
+      } else {
+        // We're the client — find our linked clinician
+        const { data: link } = await supabase
+          .from('clinician_links')
+          .select('clinician_user_id')
+          .eq('client_user_id', session.user.id)
+          .maybeSingle();
+        if (link?.clinician_user_id) {
+          setThreadPartnerId(link.clinician_user_id);
+          setThreadPartnerLabel('Dr. Will');
+        }
+      }
+    }
+    loadThreadPartner();
+  }, [session.user.id, isClinicianView, viewingClientId, viewingClientLabel]);
+
+  // Check for unread messages — show a badge on the Notes tab
+  useEffect(() => {
+    if (!threadPartnerId) return;
+    async function checkUnread() {
+      // Get latest message from the OTHER person
+      const { data: latest } = await supabase
+        .from('messages')
+        .select('created_at')
+        .eq('sender_user_id', threadPartnerId)
+        .eq('recipient_user_id', session.user.id)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (latest?.created_at) {
+        const lastSeen = localStorage.getItem(`thread_seen_${threadPartnerId}`);
+        if (!lastSeen || new Date(latest.created_at) > new Date(lastSeen)) {
+          setUnreadCount(1);
+        } else {
+          setUnreadCount(0);
+        }
+      } else {
+        setUnreadCount(0);
+      }
+    }
+    checkUnread();
+    const interval = setInterval(checkUnread, 20000); // poll every 20s
+    return () => clearInterval(interval);
+  }, [threadPartnerId, session.user.id, view]);
+
   async function updateToday(updates) {
-    if (isClinicianView) return; // read-only
+    if (isClinicianView) return;
     const current = getTodayData();
     const updated = { ...current, ...updates };
     const newData = { ...data, [today]: updated };
@@ -142,9 +199,11 @@ export default function Tracker({ session, isClinicianView, viewingClientId, onB
         @keyframes shimmer { 0%,100% { opacity: 0.6; } 50% { opacity: 1; } }
         @keyframes ripple { 0% { transform: translateY(0) scaleX(1); } 50% { transform: translateY(-2px) scaleX(1.02); } 100% { transform: translateY(0) scaleX(1); } }
         @keyframes glow { 0%,100% { box-shadow: 0 0 20px rgba(251, 191, 36, 0.2); } 50% { box-shadow: 0 0 40px rgba(251, 191, 36, 0.4); } }
+        @keyframes pulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.15); } }
         .cup-water { animation: ripple 3s ease-in-out infinite; }
         .star-shimmer { animation: shimmer 2s ease-in-out infinite; }
         .glow-effect { animation: glow 3s ease-in-out infinite; }
+        .badge-pulse { animation: pulse 2s ease-in-out infinite; }
         .input-warm { background: rgba(251, 191, 36, 0.04); border: 1px solid rgba(251, 191, 36, 0.15); color: #fef3c7; transition: all 0.2s; }
         .input-warm:focus { outline: none; border-color: rgba(251, 191, 36, 0.5); background: rgba(251, 191, 36, 0.08); }
         .input-warm::placeholder { color: rgba(254, 243, 199, 0.35); }
@@ -157,7 +216,6 @@ export default function Tracker({ session, isClinicianView, viewingClientId, onB
 
       <div className="grain"></div>
 
-      {/* Clinician view banner */}
       {isClinicianView && (
         <div className="relative z-10 px-5 pt-4">
           <div className="rounded-xl px-4 py-2.5 flex items-center justify-between" style={{
@@ -172,7 +230,6 @@ export default function Tracker({ session, isClinicianView, viewingClientId, onB
         </div>
       )}
 
-      {/* Header */}
       <div className="relative z-10 px-5 pt-6 pb-6">
         <div className="flex items-baseline justify-between">
           <div>
@@ -202,30 +259,39 @@ export default function Tracker({ session, isClinicianView, viewingClientId, onB
         </p>
       </div>
 
-      {/* Nav */}
+      {/* Nav — 4 tabs now */}
       <div className="relative z-10 px-5 mb-6">
-        <div className="flex gap-1.5 p-1 rounded-full" style={{ background: 'rgba(0,0,0,0.3)' }}>
+        <div className="flex gap-1 p-1 rounded-full" style={{ background: 'rgba(0,0,0,0.3)' }}>
           {[
             { id: 'today', label: 'Today' },
             { id: 'week', label: 'Week' },
-            { id: 'reflect', label: 'Reflect' }
-          ].map(tab => (
-            <button
-              key={tab.id}
-              onClick={() => setView(tab.id)}
-              className={`nav-pill flex-1 py-2.5 px-4 rounded-full text-sm font-medium ${
-                view === tab.id ? 'bg-amber-100 text-amber-950' : 'text-amber-200/60'
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
+            { id: 'reflect', label: 'Reflect' },
+            { id: 'notes', label: 'Notes', icon: MessageCircle }
+          ].map(tab => {
+            const showBadge = tab.id === 'notes' && unreadCount > 0 && view !== 'notes';
+            return (
+              <button
+                key={tab.id}
+                onClick={() => {
+                  setView(tab.id);
+                  if (tab.id === 'notes') setUnreadCount(0);
+                }}
+                className={`nav-pill relative flex-1 py-2.5 px-2 rounded-full text-xs font-medium ${
+                  view === tab.id ? 'bg-amber-100 text-amber-950' : 'text-amber-200/60'
+                }`}
+              >
+                {tab.label}
+                {showBadge && (
+                  <span className="badge-pulse absolute top-1 right-1 w-2 h-2 rounded-full bg-rose-400"></span>
+                )}
+              </button>
+            );
+          })}
         </div>
       </div>
 
       {view === 'today' && (
         <div className="relative z-10 px-5 space-y-5">
-          {/* The Cup */}
           <div className="relative rounded-3xl p-6 overflow-hidden" style={{
             background: 'linear-gradient(135deg, rgba(120, 53, 15, 0.4), rgba(69, 26, 3, 0.4))',
             border: '1px solid rgba(251, 191, 36, 0.15)'
@@ -274,14 +340,12 @@ export default function Tracker({ session, isClinicianView, viewingClientId, onB
             </div>
           </div>
 
-          {/* Body section */}
           <div>
             <div className="flex items-baseline gap-2 mb-3 px-1">
               <span className="display-font text-amber-100 text-xl">Body first</span>
               <span className="text-amber-200/40 text-xs italic">— before everything else</span>
             </div>
 
-            {/* Water */}
             <div className="rounded-2xl p-5 mb-3" style={{ background: 'rgba(0,0,0,0.25)', border: '1px solid rgba(251, 191, 36, 0.08)' }}>
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2.5">
@@ -304,7 +368,6 @@ export default function Tracker({ session, isClinicianView, viewingClientId, onB
               <p className="text-amber-200/40 text-[11px] mt-2.5 italic">Tap a cup. Anxiety lives in dehydration.</p>
             </div>
 
-            {/* Meals */}
             <div className="rounded-2xl p-5 mb-3" style={{ background: 'rgba(0,0,0,0.25)', border: '1px solid rgba(251, 191, 36, 0.08)' }}>
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2.5">
@@ -330,7 +393,6 @@ export default function Tracker({ session, isClinicianView, viewingClientId, onB
               <p className="text-amber-200/40 text-[11px] mt-2.5 italic">Even one. OMAD counts. Just eat something.</p>
             </div>
 
-            {/* Multivitamin */}
             <button onClick={() => updateToday({ multivitamin: !t.multivitamin })}
               className="check-button w-full rounded-2xl p-4 mb-3 text-left"
               style={{
@@ -351,7 +413,6 @@ export default function Tracker({ session, isClinicianView, viewingClientId, onB
               </div>
             </button>
 
-            {/* Med schedule */}
             <div className="rounded-2xl p-5 mb-3" style={{ background: 'rgba(0,0,0,0.25)', border: '1px solid rgba(251, 191, 36, 0.08)' }}>
               <div className="flex items-center justify-between mb-1">
                 <div className="flex items-center gap-2.5">
@@ -392,7 +453,6 @@ export default function Tracker({ session, isClinicianView, viewingClientId, onB
               </div>
             </div>
 
-            {/* Movement */}
             <div className="rounded-2xl p-5 mb-3" style={{ background: 'rgba(0,0,0,0.25)', border: '1px solid rgba(251, 191, 36, 0.08)' }}>
               <div className="flex items-center gap-2.5 mb-3">
                 <Wind size={18} className="text-teal-300" />
@@ -418,7 +478,6 @@ export default function Tracker({ session, isClinicianView, viewingClientId, onB
                 className="input-warm w-full px-4 py-2.5 rounded-xl text-sm" />
             </div>
 
-            {/* Sleep */}
             <div className="rounded-2xl p-5 mb-3" style={{ background: 'rgba(0,0,0,0.25)', border: '1px solid rgba(251, 191, 36, 0.08)' }}>
               <div className="flex items-center gap-2.5 mb-3">
                 <Moon size={18} className="text-indigo-300" />
@@ -445,7 +504,6 @@ export default function Tracker({ session, isClinicianView, viewingClientId, onB
               </div>
             </div>
 
-            {/* Grounding */}
             <button onClick={() => updateToday({ groundingDone: !t.groundingDone })}
               className="check-button w-full rounded-2xl p-5 text-left"
               style={{
@@ -469,7 +527,6 @@ export default function Tracker({ session, isClinicianView, viewingClientId, onB
             </button>
           </div>
 
-          {/* Fill the cup section */}
           <div className="pt-2">
             <div className="flex items-baseline gap-2 mb-3 px-1">
               <span className="display-font text-amber-100 text-xl">Fill the cup</span>
@@ -529,7 +586,6 @@ export default function Tracker({ session, isClinicianView, viewingClientId, onB
             </div>
           </div>
 
-          {/* Honest check-in */}
           <div className="pt-2">
             <div className="flex items-baseline gap-2 mb-3 px-1">
               <span className="display-font text-amber-100 text-xl">Honest check-in</span>
@@ -595,34 +651,49 @@ export default function Tracker({ session, isClinicianView, viewingClientId, onB
 
       {view === 'week' && <WeekView data={data} foundationScore={foundationScore} mindScore={mindScore} medsCount={medsCount} setToday={setToday} setView={setView} />}
       {view === 'reflect' && <ReflectView data={data} />}
-
-      {/* Date nav */}
-      <div className="fixed bottom-4 left-4 right-4 z-20">
-        <div className="flex items-center justify-between gap-2 px-4 py-2.5 rounded-full backdrop-blur-md" style={{
-          background: 'rgba(26, 15, 10, 0.85)', border: '1px solid rgba(251, 191, 36, 0.2)'
-        }}>
-          <button onClick={() => {
-              const d = new Date(today + 'T12:00');
-              d.setDate(d.getDate() - 1);
-              setToday(getDateKey(d));
-            }} className="p-1.5 rounded-full hover:bg-amber-200/10">
-            <ChevronLeft size={16} className="text-amber-200" />
-          </button>
-          <button onClick={() => setToday(getDateKey(new Date()))}
-            className="text-amber-100 text-xs font-medium px-3">
-            {today === getDateKey(new Date()) ? 'TODAY' : new Date(today + 'T12:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-          </button>
-          <button onClick={() => {
-              const d = new Date(today + 'T12:00');
-              d.setDate(d.getDate() + 1);
-              const newKey = getDateKey(d);
-              if (newKey <= getDateKey(new Date())) setToday(newKey);
-            }} className="p-1.5 rounded-full hover:bg-amber-200/10"
-            disabled={today >= getDateKey(new Date())}>
-            <ChevronRight size={16} className="text-amber-200" />
-          </button>
+      {view === 'notes' && threadPartnerId && (
+        <Messages
+          session={session}
+          threadWithUserId={threadPartnerId}
+          threadWithLabel={threadPartnerLabel}
+          isClinician={isClinicianView}
+        />
+      )}
+      {view === 'notes' && !threadPartnerId && (
+        <div className="relative z-10 px-5 py-8 text-center">
+          <p className="text-amber-200/50 text-sm italic">No clinician linked to this account yet.</p>
         </div>
-      </div>
+      )}
+
+      {/* Date nav — only on tracker views, not on Notes */}
+      {view !== 'notes' && (
+        <div className="fixed bottom-4 left-4 right-4 z-20">
+          <div className="flex items-center justify-between gap-2 px-4 py-2.5 rounded-full backdrop-blur-md" style={{
+            background: 'rgba(26, 15, 10, 0.85)', border: '1px solid rgba(251, 191, 36, 0.2)'
+          }}>
+            <button onClick={() => {
+                const d = new Date(today + 'T12:00');
+                d.setDate(d.getDate() - 1);
+                setToday(getDateKey(d));
+              }} className="p-1.5 rounded-full hover:bg-amber-200/10">
+              <ChevronLeft size={16} className="text-amber-200" />
+            </button>
+            <button onClick={() => setToday(getDateKey(new Date()))}
+              className="text-amber-100 text-xs font-medium px-3">
+              {today === getDateKey(new Date()) ? 'TODAY' : new Date(today + 'T12:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+            </button>
+            <button onClick={() => {
+                const d = new Date(today + 'T12:00');
+                d.setDate(d.getDate() + 1);
+                const newKey = getDateKey(d);
+                if (newKey <= getDateKey(new Date())) setToday(newKey);
+              }} className="p-1.5 rounded-full hover:bg-amber-200/10"
+              disabled={today >= getDateKey(new Date())}>
+              <ChevronRight size={16} className="text-amber-200" />
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
