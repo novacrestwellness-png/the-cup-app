@@ -1,15 +1,15 @@
 import React, { useState, useEffect } from 'react';
-import { Droplet, Apple, Pill, Wind, TrendingUp, LogOut, User, Eye, Calendar, Heart, Flame, Sparkles } from 'lucide-react';
+import { Droplet, Apple, Pill, Wind, TrendingUp, LogOut, User, Eye, Calendar, MessageCircle } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
 export default function ClinicianDashboard({ session, onViewClient }) {
   const [links, setLinks] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [stats, setStats] = useState({}); // keyed by client user_id
+  const [stats, setStats] = useState({});
+  const [unreadMap, setUnreadMap] = useState({}); // client_user_id -> bool
 
   useEffect(() => {
     async function load() {
-      // Get linked clients
       const { data: linkRows } = await supabase
         .from('clinician_links')
         .select('client_user_id, client_label')
@@ -22,8 +22,8 @@ export default function ClinicianDashboard({ session, onViewClient }) {
 
       setLinks(linkRows);
 
-      // For each client, pull last 14 days of entries to compute engagement stats
       const statsObj = {};
+      const unreadObj = {};
       for (const link of linkRows) {
         const fourteenDaysAgo = new Date();
         fourteenDaysAgo.setDate(fourteenDaysAgo.getDate() - 13);
@@ -37,8 +37,26 @@ export default function ClinicianDashboard({ session, onViewClient }) {
           .order('entry_date', { ascending: false });
 
         statsObj[link.client_user_id] = computeStats(entries || []);
+
+        // Check for unread message from this client
+        const { data: latestMsg } = await supabase
+          .from('messages')
+          .select('created_at')
+          .eq('sender_user_id', link.client_user_id)
+          .eq('recipient_user_id', session.user.id)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (latestMsg?.created_at) {
+          const lastSeen = localStorage.getItem(`thread_seen_${link.client_user_id}`);
+          unreadObj[link.client_user_id] = !lastSeen || new Date(latestMsg.created_at) > new Date(lastSeen);
+        } else {
+          unreadObj[link.client_user_id] = false;
+        }
       }
       setStats(statsObj);
+      setUnreadMap(unreadObj);
       setLoading(false);
     }
     load();
@@ -89,6 +107,8 @@ export default function ClinicianDashboard({ session, onViewClient }) {
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap');
         .display-font { font-family: 'Fraunces', serif; }
+        @keyframes pulse-msg { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.7; transform: scale(1.1); } }
+        .msg-pulse { animation: pulse-msg 2s ease-in-out infinite; }
       `}</style>
 
       <div className="px-5 pt-8 pb-6">
@@ -120,6 +140,7 @@ export default function ClinicianDashboard({ session, onViewClient }) {
           <div className="space-y-4">
             {links.map(link => {
               const s = stats[link.client_user_id] || {};
+              const hasUnread = unreadMap[link.client_user_id];
               const lastEntryDays = s.lastEntryDate
                 ? Math.floor((new Date() - new Date(s.lastEntryDate + 'T12:00')) / (1000 * 60 * 60 * 24))
                 : null;
@@ -136,7 +157,17 @@ export default function ClinicianDashboard({ session, onViewClient }) {
                         <User size={18} className="text-amber-950" />
                       </div>
                       <div>
-                        <p className="text-amber-50 font-medium">{link.client_label || 'Client'}</p>
+                        <div className="flex items-center gap-2">
+                          <p className="text-amber-50 font-medium">{link.client_label || 'Client'}</p>
+                          {hasUnread && (
+                            <div className="flex items-center gap-1 px-2 py-0.5 rounded-full" style={{
+                              background: 'rgba(244, 63, 94, 0.2)', border: '1px solid rgba(244, 63, 94, 0.4)'
+                            }}>
+                              <MessageCircle size={10} className="text-rose-300 msg-pulse" />
+                              <span className="text-rose-200 text-[10px] font-medium">new note</span>
+                            </div>
+                          )}
+                        </div>
                         <p className="text-amber-200/50 text-[11px]">
                           {lastEntryDays === null ? 'No entries yet'
                             : lastEntryDays === 0 ? 'Last logged today'
@@ -145,7 +176,7 @@ export default function ClinicianDashboard({ session, onViewClient }) {
                         </p>
                       </div>
                     </div>
-                    <button onClick={() => onViewClient(link.client_user_id)}
+                    <button onClick={() => onViewClient(link.client_user_id, link.client_label || 'Client')}
                       className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium"
                       style={{ background: 'rgba(251, 191, 36, 0.15)', border: '1px solid rgba(251, 191, 36, 0.3)', color: '#fef3c7' }}>
                       <Eye size={12} />
@@ -153,7 +184,6 @@ export default function ClinicianDashboard({ session, onViewClient }) {
                     </button>
                   </div>
 
-                  {/* Engagement: did she show up */}
                   <div className="grid grid-cols-2 gap-3 mb-3">
                     <MetricBox icon={<Calendar size={14} className="text-amber-300" />}
                       label="Days logged" value={`${s.daysLogged7 || 0}/7`} note="last week" />
@@ -161,7 +191,6 @@ export default function ClinicianDashboard({ session, onViewClient }) {
                       label="14-day total" value={`${s.daysLogged14 || 0}/14`} note="entries" />
                   </div>
 
-                  {/* Foundation metrics */}
                   <div className="grid grid-cols-2 gap-3 mb-3">
                     <MetricBox icon={<Droplet size={14} className="text-blue-300" />}
                       label="Avg water" value={`${s.avgWater || 0}/8`} note="cups/day" />
@@ -173,7 +202,6 @@ export default function ClinicianDashboard({ session, onViewClient }) {
                       label="Grounding" value={`${s.groundingDays || 0}`} note={`of ${s.daysLogged14 || 0} days`} />
                   </div>
 
-                  {/* The action metric */}
                   <div className="rounded-xl p-3" style={{
                     background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.15), rgba(180, 83, 9, 0.08))',
                     border: '1px solid rgba(251, 191, 36, 0.25)'
